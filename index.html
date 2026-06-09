@@ -921,9 +921,238 @@ body:not(.loading-active) .lang-bar{
     #loading-screen::after,.loading-progress-wrap{transform:translateX(-50%)}
 }
 
+
+
+/* ===== Three.js Jade Detail Viewer Upgrade ===== */
+.detail-showcase .jade-three-viewer{
+    width:100%;
+    height:100%;
+    display:none;
+    position:relative;
+    border-radius:18px;
+    overflow:hidden;
+    background:
+        radial-gradient(circle at 50% 30%, rgba(77,143,115,.18), rgba(246,240,231,.78) 58%, rgba(240,235,226,.98));
+}
+.detail-showcase.model-active .jade-three-viewer{
+    display:block;
+}
+.jade-three-viewer canvas{
+    width:100%!important;
+    height:100%!important;
+    display:block;
+    border-radius:18px;
+}
+.jade-three-status{
+    position:absolute;
+    left:50%;
+    bottom:18px;
+    transform:translateX(-50%);
+    z-index:3;
+    padding:9px 14px;
+    border-radius:999px;
+    background:rgba(255,255,255,.46);
+    border:1px solid rgba(255,255,255,.58);
+    backdrop-filter:blur(16px);
+    -webkit-backdrop-filter:blur(16px);
+    color:#6f8f87;
+    font-size:.72rem;
+    letter-spacing:.12em;
+    white-space:nowrap;
+    box-shadow:0 10px 24px rgba(60,45,30,.06);
+    transition:opacity .45s ease, transform .45s ease;
+}
+.jade-three-viewer.ready .jade-three-status{
+    opacity:0;
+    transform:translateX(-50%) translateY(8px);
+    pointer-events:none;
+}
+
 </style>
 
 <script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+
+<script>
+window.jadeThreeReady = new Promise((resolve, reject) => {
+  window.__resolveJadeThreeReady = resolve;
+  window.__rejectJadeThreeReady = reject;
+});
+window.jadeThreeProgress = 0;
+</script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+let scene, camera, renderer, controls, model, rimLight;
+let animationStarted = false;
+let mounted = false;
+let modelReady = false;
+let latestContainer = null;
+
+const loader = new GLTFLoader();
+
+function updateJadeStatus(text){
+  const status = document.getElementById('jadeThreeStatus');
+  if(status) status.textContent = text;
+}
+
+function setupScene(){
+  scene = new THREE.Scene();
+  scene.background = null;
+  scene.fog = new THREE.FogExp2(0xf4efe6, 0.018);
+
+  camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+  camera.position.set(2, 1.45, 3);
+  camera.lookAt(0, 0.15, 0);
+
+  renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.shadowMap.enabled = true;
+  renderer.setClearColor(0x000000, 0);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.055;
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 1.15;
+  controls.enableZoom = true;
+  controls.enablePan = true;
+  controls.target.set(0, 0.15, 0);
+
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.58);
+  scene.add(ambientLight);
+
+  const mainLight = new THREE.DirectionalLight(0xffffff, 1.05);
+  mainLight.position.set(3, 5, 2);
+  mainLight.castShadow = true;
+  scene.add(mainLight);
+
+  const backLight = new THREE.PointLight(0x88aaff, 0.34);
+  backLight.position.set(-2, 1, -3);
+  scene.add(backLight);
+
+  const fillLight = new THREE.PointLight(0xffcc88, 0.32);
+  fillLight.position.set(1.2, 1.6, 2.4);
+  scene.add(fillLight);
+
+  rimLight = new THREE.PointLight(0x88ccaa, 0.42);
+  rimLight.position.set(1, 1.2, -2);
+  scene.add(rimLight);
+
+  const gridHelper = new THREE.GridHelper(4.5, 18, 0x8bb8a2, 0xd8cab7);
+  gridHelper.position.y = -0.82;
+  gridHelper.material.transparent = true;
+  gridHelper.material.opacity = 0.16;
+  scene.add(gridHelper);
+}
+
+function fitModelToScene(gltf){
+  model = gltf.scene;
+  scene.add(model);
+
+  const box = new THREE.Box3().setFromObject(model);
+  const center = box.getCenter(new THREE.Vector3());
+  model.position.sub(center);
+  model.position.y += 0.1;
+
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  if(maxDim > 0){
+    const scale = 1.35 / maxDim;
+    model.scale.setScalar(scale);
+  }
+
+  model.traverse(obj => {
+    if(obj.isMesh){
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+      if(obj.material){
+        obj.material.needsUpdate = true;
+      }
+    }
+  });
+}
+
+function resizeJadeThreeScene(){
+  const container = latestContainer || document.getElementById('jadeThreeViewer');
+  if(!container || !renderer || !camera) return;
+  const rect = container.getBoundingClientRect();
+  const width = Math.max(1, rect.width || container.clientWidth || 500);
+  const height = Math.max(1, rect.height || container.clientHeight || 650);
+  renderer.setSize(width, height, false);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+}
+
+function animate(){
+  animationStarted = true;
+  requestAnimationFrame(animate);
+  if(rimLight){
+    const t = performance.now() * 0.001;
+    rimLight.position.x = 1 + Math.sin(t * 0.8) * 0.5;
+    rimLight.intensity = 0.38 + Math.sin(t * 1.2) * 0.08;
+  }
+  if(controls) controls.update();
+  if(renderer && scene && camera) renderer.render(scene, camera);
+}
+
+function mountJadeThreeScene(){
+  const container = document.getElementById('jadeThreeViewer');
+  if(!container || !renderer) return;
+  latestContainer = container;
+  if(!mounted){
+    container.appendChild(renderer.domElement);
+    mounted = true;
+  }
+  requestAnimationFrame(() => {
+    resizeJadeThreeScene();
+    if(modelReady) container.classList.add('ready');
+  });
+}
+
+window.mountJadeThreeScene = mountJadeThreeScene;
+window.resizeJadeThreeScene = resizeJadeThreeScene;
+
+setupScene();
+
+loader.load(
+  'jade.glb',
+  gltf => {
+    fitModelToScene(gltf);
+    modelReady = true;
+    window.jadeThreeProgress = 100;
+    updateJadeStatus('3D 模型已准备就绪');
+    mountJadeThreeScene();
+    const container = document.getElementById('jadeThreeViewer');
+    if(container) container.classList.add('ready');
+    if(!animationStarted) animate();
+    if(window.__resolveJadeThreeReady) window.__resolveJadeThreeReady(true);
+  },
+  xhr => {
+    const total = xhr.total || 0;
+    const percent = total ? Math.floor((xhr.loaded / total) * 100) : Math.min(95, Math.floor((xhr.loaded / 1024 / 1024) * 18));
+    window.jadeThreeProgress = percent;
+    updateJadeStatus(`3D 模型加载中 ${percent}%`);
+  },
+  error => {
+    console.error('jade.glb 加载失败：', error);
+    updateJadeStatus('3D 模型加载失败，请检查 jade.glb 路径');
+    if(window.__rejectJadeThreeReady) window.__rejectJadeThreeReady(error);
+  }
+);
+
+window.addEventListener('resize', resizeJadeThreeScene);
+</script>
 </head>
 <body>
 
@@ -1007,7 +1236,9 @@ body:not(.loading-active) .lang-bar{
   <section class="detail-glass detail-center">
     <div class="detail-showcase" id="detailShowcase">
       <img id="detailImg" src="" alt="">
-      <model-viewer id="detailModel" src="jade.glb" alt="岫岩玉雕 3D 模型" camera-controls auto-rotate rotation-per-second="18deg" shadow-intensity="0.9" exposure="1" interaction-prompt="none" loading="eager" reveal="auto"><div slot="poster" style="padding:24px;color:#7B6B57;text-align:center;line-height:1.8">正在加载 3D 玉雕模型…<br>若长时间无显示，请用本地服务器打开，并确认 jade.glb 与 HTML 在同一目录。</div></model-viewer>
+      <div id="jadeThreeViewer" class="jade-three-viewer" aria-label="岫岩玉雕 3D 模型">
+        <div class="jade-three-status" id="jadeThreeStatus">正在准备 3D 玉雕模型…</div>
+      </div>
       <div class="detail-caption">
         <strong id="detailCaptionTitle"></strong><br>
         <span id="detailCaptionMeta"></span>
@@ -1799,14 +2030,15 @@ function renderDetail(type) {
   document.getElementById("detailHeading").textContent = data.heading;
   document.getElementById("detailDesc").textContent = data.desc;
   const detailImg = document.getElementById("detailImg");
-  const detailModel = document.getElementById("detailModel");
   const detailShowcase = document.getElementById("detailShowcase");
   if (type === "yudiao") {
     detailImg.removeAttribute("src");
     detailImg.alt = data.name;
-    detailModel.src = "jade.glb";
-    detailModel.alt = data.name + " 3D 模型";
     detailShowcase.classList.add("model-active");
+    if (window.mountJadeThreeScene) {
+      window.mountJadeThreeScene();
+      setTimeout(() => window.resizeJadeThreeScene && window.resizeJadeThreeScene(), 80);
+    }
   } else {
     detailImg.src = detailImages[type];
     detailImg.alt = data.name;
@@ -1894,14 +2126,15 @@ document.addEventListener("DOMContentLoaded", () => {
   const loadingScreen = document.getElementById("loading-screen");
   const progressBar = document.getElementById("loadingProgressBar");
   const progressText = document.getElementById("loadingPercent");
-  const minIntroTime = 2600;
+  const minIntroTime = 2800;
   const startTime = performance.now();
   let finished = false;
+  let visualProgress = 6;
 
   function setProgress(value){
-    const safeValue = Math.max(0, Math.min(100, Math.round(value)));
-    if(progressBar) progressBar.style.width = safeValue + "%";
-    if(progressText) progressText.textContent = safeValue + "%";
+    visualProgress = Math.max(0, Math.min(100, Math.round(value)));
+    if(progressBar) progressBar.style.width = visualProgress + "%";
+    if(progressText) progressText.textContent = visualProgress + "%";
   }
 
   function finishLoading(){
@@ -1911,133 +2144,66 @@ document.addEventListener("DOMContentLoaded", () => {
     const elapsed = performance.now() - startTime;
     const delay = Math.max(0, minIntroTime - elapsed);
     setTimeout(() => {
+      loadingScreen.classList.add("loading-finished");
+      document.body.classList.remove("loading-active");
       document.querySelectorAll("model-viewer").forEach(model => {
         if(typeof model.dismissPoster === "function") model.dismissPoster();
       });
-      loadingScreen.classList.add("loading-finished");
-      document.body.classList.remove("loading-active");
+      if(window.mountJadeThreeScene) window.mountJadeThreeScene();
       setTimeout(() => loadingScreen.remove(), 1000);
     }, delay);
   }
 
-  function waitForModelViewerLoad(model){
-    return new Promise((resolve, reject) => {
-      if(model.loaded || model.modelIsVisible){
-        resolve("loaded");
-        return;
-      }
-
-      let done = false;
-      const complete = status => {
-        if(done) return;
-        done = true;
-        model.removeEventListener("load", onLoad);
-        model.removeEventListener("error", onError);
-        resolve(status);
-      };
-      const fail = event => {
-        if(done) return;
-        done = true;
-        model.removeEventListener("load", onLoad);
-        model.removeEventListener("error", onError);
-        reject(event);
-      };
-      const onLoad = () => complete("loaded");
-      const onError = e => fail(e);
-
-      model.addEventListener("load", onLoad, { once:true });
-      model.addEventListener("error", onError, { once:true });
-    });
-  }
-
-  function createJadePreloader(src){
-    const preloader = document.createElement("model-viewer");
-    preloader.setAttribute("src", src);
-    preloader.setAttribute("loading", "eager");
-    preloader.setAttribute("reveal", "auto");
-    preloader.setAttribute("preload", "");
-    preloader.setAttribute("camera-controls", "");
-    preloader.setAttribute("interaction-prompt", "none");
-    preloader.setAttribute("aria-hidden", "true");
-    preloader.style.cssText = [
-      "position:fixed",
-      "left:-10px",
-      "top:-10px",
-      "width:1px",
-      "height:1px",
-      "opacity:0",
-      "pointer-events:none",
-      "z-index:-1"
-    ].join(";");
-    document.body.appendChild(preloader);
-    return preloader;
-  }
+  const progressTimer = setInterval(() => {
+    if(finished) {
+      clearInterval(progressTimer);
+      return;
+    }
+    const real = typeof window.jadeThreeProgress === "number" ? window.jadeThreeProgress : 0;
+    const target = Math.min(96, Math.max(visualProgress + 1, 18 + real * 0.78));
+    if(visualProgress < target) setProgress(Math.min(target, visualProgress + 2));
+  }, 180);
 
   async function startLoading(){
-    setProgress(5);
+    setProgress(8);
 
-    if(window.customElements && customElements.whenDefined){
-      try{
-        await Promise.race([
-          customElements.whenDefined("model-viewer"),
-          new Promise(resolve => setTimeout(resolve, 5000))
-        ]);
-      }catch(e){}
-    }
-    setProgress(18);
-
-    const jadeSrc = "jade.glb";
-
-    // 先用 fetch 把 jade.glb 文件拉进浏览器缓存，避免进入页面后才开始下载。
     try{
-      const res = await fetch(jadeSrc, { cache:"force-cache" });
-      if(!res.ok) throw new Error(jadeSrc + " " + res.status);
-      await res.blob();
-      setProgress(48);
+      if(!window.jadeThreeReady){
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      setProgress(18);
+
+      if(window.jadeThreeReady){
+        await window.jadeThreeReady;
+      }else{
+        throw new Error("jadeThreeReady 未初始化");
+      }
+
+      setProgress(94);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      finishLoading();
     }catch(err){
-      console.warn("jade.glb 预加载失败：请确认 jade.glb 已上传，并且和 index.html 在同一目录，文件名大小写完全一致。", err);
-      // 不直接进入，继续让 model-viewer 尝试加载，这样真实错误会在控制台里出现。
-      setProgress(35);
+      console.warn("jade.glb 未能完全加载。请确认 jade.glb 与 index.html 同级，并检查文件名大小写。", err);
+      // 不无限黑屏，保留页面中的错误提示，方便调试 GitHub Pages 路径问题。
+      setProgress(100);
+      finishLoading();
     }
-
-    // 关键修复：详情页本身是隐藏层，浏览器可能不会立刻渲染里面的 model-viewer。
-    // 所以创建一个 1px、不可见但真实存在的 model-viewer，专门等待 jade.glb 完成解析加载。
-    let preloader;
-    try{
-      preloader = createJadePreloader(jadeSrc);
-      await waitForModelViewerLoad(preloader);
-      setProgress(82);
-    }catch(err){
-      console.warn("jade.glb 没有成功完成 model-viewer 加载。请检查路径、文件大小写、GitHub Pages 是否已部署最新文件。", err);
-      // 如果模型路径错误，不要无限黑屏；保留兜底进入页面并显示原 poster 提示。
-      setProgress(82);
-    }
-
-    // 同步唤醒页面中已有的两个模型，让它们进入首页后尽量直接使用缓存。
-    document.querySelectorAll('model-viewer[src="jade.glb"]').forEach(model => {
-      model.setAttribute("loading", "eager");
-      model.setAttribute("preload", "");
-      if(typeof model.dismissPoster === "function") model.dismissPoster();
-    });
-
-    setProgress(94);
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    if(preloader) preloader.remove();
-    finishLoading();
   }
 
   startLoading();
 
-  // 兜底：如果 GitHub Pages 上 jade.glb 路径错误，不能让用户永久停在 Loading。
+  // 兜底：网络或路径异常时避免永久停在开屏动画。
   setTimeout(() => {
     if(!finished){
-      console.warn("Loading 超时：jade.glb 可能路径错误、文件未上传、大小写不一致，或网络太慢。详情页会保留模型加载提示。真正部署时请重点检查 jade.glb 是否和 index.html 同级。 ");
+      console.warn("Loading 超时：jade.glb 可能路径错误、文件未上传、大小写不一致，或网络太慢。");
       finishLoading();
     }
-  }, 30000);
-})();
-</script>
+  }, 45000);
+})();</script>
 
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"7939e04a4baf43c8b86a560f74aac60e","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"1c1c7799c54e46349cc23295b5e08299","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"7939e04a4baf43c8b86a560f74aac60e","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"1c1c7799c54e46349cc23295b5e08299","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 </body>
